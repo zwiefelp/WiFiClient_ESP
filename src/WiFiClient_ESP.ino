@@ -80,7 +80,7 @@ void setup() {
 
   tft.begin();
   SPI.setFrequency(ESP_SPI_FREQ);
-  tft.fillScreen(ILI9341_BLACK);  
+  tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE);
   //tft.setTextSize(1);
   tft.setRotation(0);
@@ -97,9 +97,9 @@ void setup() {
 
   tft.print("Connecting to ");
   tft.print(ssid);
-  
+
   WiFi.begin(ssid, password);
-  
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
       if (Serial.available() && debug) {
@@ -109,25 +109,25 @@ void setup() {
   }
   if (Serial.available() && debug) {
     Serial.println("");
-    Serial.println("WiFi connected");  
+    Serial.println("WiFi connected");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
   }
   //tft.println("");
-  tft.println("WiFi connected");  
+  tft.println("WiFi connected");
   tft.print("IP address: ");
   tft.println(WiFi.localIP());
-  
+
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  char spayload[length]; 
+  char spayload[length];
   memcpy(spayload, payload, length);
   spayload[length] = '\0';
   char topicfilter[50] = "";
-  
+
   if (Serial.available() && debug) {
     Serial.print("Message arrived [");
     Serial.print(topic);
@@ -137,7 +137,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
     Serial.println();
   }
-  
+
   if (strcmp(topic,"/openhab/out/Netatmo_Temp_Indoor/state") == 0) {
     strcpy(tempin, spayload);
   }
@@ -174,17 +174,17 @@ void callback(char* topic, byte* payload, unsigned int length) {
     strcpy(daytime, spayload);
     if (sleep) { paintSleep(); }
   }
-  
+
   snprintf(topicfilter,50,"/openhab/configuration/%i",id);
     if (strcmp(topic,topicfilter) == 0) {
     getConfiguration(spayload);
   }
-  
+
 }
 
 void reconnect() {
   // Loop until we're reconnected
-  tft.fillScreen(ILI9341_BLACK);  
+  tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE);
   while (!client.connected()) {
     tft.print("Attempting MQTT connection...");
@@ -216,7 +216,7 @@ void reconnect() {
 void btnLoop() {
   if (digitalRead(button1) == HIGH && digitalRead(multi) == LOW && b2d == false) {
     btnDownCallback(2);
-    b2d == true; 
+    b2d == true;
   }
 
   if (digitalRead(button1) == LOW && b2d == true) {
@@ -225,7 +225,7 @@ void btnLoop() {
 
   if (digitalRead(button1) == HIGH && digitalRead(multi) == HIGH && b1d == false) {
     btnDownCallback(1);
-    b1d == true; 
+    b1d == true;
   }
 
   if (digitalRead(button1) == LOW && digitalRead(multi) == LOW && b1d == true) {
@@ -235,7 +235,7 @@ void btnLoop() {
   // GPIO0 ist LOW Aktiv!
   if (digitalRead(button2) == LOW && digitalRead(multi) == LOW && b4d == false) {
     btnDownCallback(4);
-    b4d == true; 
+    b4d == true;
   }
 
   if (digitalRead(button2) == HIGH && b4d == true) {
@@ -244,16 +244,16 @@ void btnLoop() {
 
   if (digitalRead(button2) == LOW && digitalRead(multi) == HIGH && b3d == false) {
     btnDownCallback(3);
-    b3d == true; 
+    b3d == true;
   }
 
   if (digitalRead(button2) == HIGH && digitalRead(multi) == LOW && b2d == true) {
     b3d = false;
-  } 
+  }
 
   if (digitalRead(button3) == HIGH && digitalRead(multi) == LOW && b6d == false) {
     btnDownCallback(6);
-    b6d == true; 
+    b6d == true;
   }
 
   if (digitalRead(button3) == LOW && b6d == true) {
@@ -262,16 +262,16 @@ void btnLoop() {
 
   if (digitalRead(button3) == HIGH && digitalRead(multi) == HIGH && b5d == false) {
     btnDownCallback(5);
-    b5d == true; 
+    b5d == true;
   }
 
   if (digitalRead(button3) == LOW && digitalRead(multi) == LOW && b5d == true) {
     b5d = false;
   }
-  
+
   if (digitalRead(button4) == HIGH && digitalRead(multi) == LOW && b8d == false) {
     btnDownCallback(8);
-    b8d == true; 
+    b8d == true;
   }
 
   if (digitalRead(button4) == LOW && b8d == true) {
@@ -280,7 +280,7 @@ void btnLoop() {
 
   if (digitalRead(button4) == HIGH && digitalRead(multi) == HIGH && b7d == false) {
     btnDownCallback(7);
-    b7d == true; 
+    b7d == true;
   }
 
   if (digitalRead(button4) == LOW && digitalRead(multi) == LOW && b7d == true) {
@@ -289,7 +289,7 @@ void btnLoop() {
 
   if (digitalRead(button5) == HIGH && digitalRead(multi) == LOW && b10d == false) {
     btnDownCallback(10);
-    b9d == true; 
+    b9d == true;
   }
 
   if (digitalRead(button5) == LOW && b10d == true) {
@@ -298,7 +298,7 @@ void btnLoop() {
 
   if (digitalRead(button5) == HIGH && digitalRead(multi) == HIGH && b9d == false) {
     btnDownCallback(9);
-    b9d == true; 
+    b9d == true;
   }
 
   if (digitalRead(button5) == LOW && digitalRead(multi) == LOW && b9d == true) {
@@ -311,7 +311,7 @@ void btnDownCallback(unsigned int btn) {
     char topic[50] = "";
     int i  = 0;
     i = int((btn - .5) / 2);
-    
+
     if (!sleep) {
       if ( i > 0 ) {
         if (Serial.available() && debug) {
@@ -320,15 +320,15 @@ void btnDownCallback(unsigned int btn) {
           Serial.print(" Member=");
           Serial.println(i);
         }
-       
+
         if (btn == 1 || btn == 3 || btn == 5 || btn == 7 || btn == 9) {
           strcpy(cmd, Screen[num][i].cmdl);
         } else {
           strcpy(cmd, Screen[num][i].cmdr);
         }
-        
+
         strcpy(topic, Screen[num][i].topic);
-            
+
         if (Serial.available() && debug) {
           snprintf (msg, 75, "%s %s", topic, cmd);
           Serial.print("Publish message: ");
@@ -353,7 +353,7 @@ void getConfiguration(char* cmd) {
   char temp[50] = "";
 
   tft.println(cmd);
-  
+
   if ( strcmp(cmd,"initialize") == 0 ) {
     tft.println("Getting Configuration...");
     snprintf(msg,50,"getconfig:%i", id);
@@ -368,8 +368,8 @@ void getConfiguration(char* cmd) {
 
   if ( strcmp(cmd,"reconfigure") == 0 ) {
     configured = false;
-    confstage = 0;    
-    tft.fillScreen(ILI9341_BLACK);  
+    confstage = 0;
+    tft.fillScreen(ILI9341_BLACK);
     tft.setTextColor(ILI9341_WHITE);
     tft.setFont();
     tft.setCursor(0,0);
@@ -402,7 +402,7 @@ void getConfiguration(char* cmd) {
       }
       if (strcmp(ptr,"EndConfig") == 0) {
         confstage = 4;
-        goto finish;  
+        goto finish;
       }
     }
   }
@@ -418,7 +418,7 @@ void getConfiguration(char* cmd) {
       }
       if (strcmp(ptr,"Member") == 0) {
         ptr = strtok(NULL, delimiter);
-        int member = atoi(ptr);      
+        int member = atoi(ptr);
         ptr = strtok(NULL, delimiter);
         strcpy(Screen[num][member].name1, ptr);
         ptr = strtok(NULL, delimiter);
@@ -434,8 +434,8 @@ void getConfiguration(char* cmd) {
         ptr = strtok(NULL, delimiter);
         strcpy(Screen[num][member].cmdl, ptr);
         ptr = strtok(NULL, delimiter);
-        strcpy(Screen[num][member].cmdr, ptr);                
-      }  
+        strcpy(Screen[num][member].cmdr, ptr);
+      }
     }
   }
   finish:;
@@ -447,11 +447,11 @@ void paintScreen() {
   int ypos;
   int cw = 9;
   char scr[20];
-  int16_t x1, y1; 
+  int16_t x1, y1;
   uint16_t w, h;
 
-  
-  tft.fillScreen(ILI9341_BLACK);  
+
+  tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE);
   //tft.setTextSize(1);
   tft.setRotation(0);
@@ -470,12 +470,12 @@ void paintScreen() {
 
   tft.setFont(&FreeSans9pt7b);
   cw = 9;
-  
+
   for (unsigned int i = 1; i<=4; i++ ) {
-      
+
     if ( strcmp(Screen[num][i].name1,"") != 0) {
       ypos = (i-1) * 83 + 15 + 35;
-      
+
       text = Screen[num][i].txtl;
       color = getColor(text);
       tft.setTextColor(color);
@@ -483,20 +483,20 @@ void paintScreen() {
       tft.print(text);
       tft.getTextBounds(text, 6, ypos, &x1, &y1, &w, &h);
       tft.drawRoundRect(x1 - 4, y1 - 4 , w + 8, h + 8, 2, color);
-  
+
       tft.setTextColor(ILI9341_WHITE);
       text = Screen[num][i].name1;
       tft.getTextBounds(text, 10,10, &x1, &y1, &w, &h);
       xpos = ((240 - w) / 2);
       tft.setCursor(xpos, ypos - 9);
       tft.print(text);
-   
+
       text = Screen[num][i].name2;
       tft.getTextBounds(text, 10,10, &x1, &y1, &w, &h);
       xpos = ((240 - w) / 2);
       tft.setCursor(xpos, ypos + 9);
       tft.print(text);
-  
+
       text = Screen[num][i].txtr;
       color = getColor(text);
       tft.setTextColor(color);
@@ -512,7 +512,7 @@ void paintScreen() {
 uint16_t getColor(char* text) {
   uint16_t color;
   color = ILI9341_YELLOW;
-  
+
   if ( strcmp(text,"Ein") == 0 ) {
     color = ILI9341_GREEN;
   }
@@ -528,8 +528,9 @@ void paintSleep() {
   int cw = 18;
   char scr[20] ="00:00";
   char* buf;
-  
-  tft.fillScreen(ILI9341_BLACK);  
+  double dtemp = 0.0;
+
+  tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE);
   //tft.setTextSize(1);
   tft.setRotation(0);
@@ -558,36 +559,41 @@ void paintSleep() {
   tft.setCursor(10, 235);
   tft.print("Netatmo Aussen");
   //tft.drawRoundRect(2, 230, 236, 80, 2, ILI9341_WHITE);
- 
+
   tft.setFont(&FreeSans18pt7b);
   cw = 18;
   tft.setTextColor(ILI9341_GREEN);
-  snprintf(scr,20,"%s C", tempin);
+  dtemp = atof(tempin);
+  snprintf(scr,20,"%.1f C", dtemp);
   xpos = (230 - strlen(scr) * cw);
   tft.setCursor(xpos, 140);
   tft.print(scr);
 
   tft.setFont(&FreeSans9pt7b);
   cw = 9;
-  snprintf(scr,20,"%s %", humin);
+  dtemp = atof(humin);
+  snprintf(scr,20,"%.1f %%", dtemp);
   xpos = (100 - strlen(scr) * cw);
   tft.setCursor(xpos, 170);
   tft.print(scr);
   tft.drawBitmap(10, 156, humicon, 11, 16, ILI9341_WHITE);
 
-  snprintf(scr,20,"%s mb", pressin);
+  dtemp = atof(pressin);
+  snprintf(scr,20,"%.0f mb", dtemp);
   xpos = (230 - strlen(scr) * cw);
   tft.setCursor(xpos, 170);
   tft.print(scr);
   tft.drawBitmap(130, 156, pressicon, 14, 16, ILI9341_WHITE);
-  
-  snprintf(scr,20,"%s ppm", coin);
+
+  dtemp = atof(coin);
+  snprintf(scr,20,"%.0f ppm", dtemp);
   xpos = (100 - strlen(scr) * cw);
   tft.setCursor(xpos, 190);
   tft.print(scr);
   tft.drawBitmap(8, 176, co2icon, 16, 16, ILI9341_WHITE);
 
-  snprintf(scr,20,"%s db", noisein);
+  dtemp = atof(noisein);
+  snprintf(scr,20,"%.0f db", dtemp);
   xpos = (230 - strlen(scr) * cw);
   tft.setCursor(xpos, 190);
   tft.print(scr);
@@ -596,25 +602,28 @@ void paintSleep() {
   tft.setTextColor(ILI9341_RED);
   tft.setFont(&FreeSans18pt7b);
   cw = 18;
-  snprintf(scr,20,"%s C", tempout);
+  dtemp = atof(tempout);
+  snprintf(scr,20,"%.1f C", dtemp);
   xpos = (230 - strlen(scr) * cw);
   tft.setCursor(xpos, 265);
   tft.print(scr);
 
   tft.setFont(&FreeSans9pt7b);
   cw = 9;
-  snprintf(scr,20,"%s %", humout);
+  dtemp = atof(humout);
+  snprintf(scr,20,"%.1f %%", dtemp);
   xpos = (100 - strlen(scr) * cw);
   tft.setCursor(xpos, 295);
   tft.print(scr);
   tft.drawBitmap(10, 281, humicon, 11, 16, ILI9341_WHITE);
 
-  snprintf(scr,20,"%s mb", pressin);
+  dtemp = atof(pressin);
+  snprintf(scr,20,"%.0f mb", dtemp);
   xpos = (230 - strlen(scr) * cw);
   tft.setCursor(xpos, 295);
   tft.print(scr);
   tft.drawBitmap(130, 281, pressicon, 14, 16, ILI9341_WHITE);
-  
+
 }
 
 void loop() {
@@ -632,13 +641,13 @@ void loop() {
       paintScreen();
     }
   }
-  
+
   client.loop();
-  
+
   if (configured) {
     btnLoop();
     delaym = delaym + (millis() - smillis);
-    
+
     if ( delaym > sleepmillis && !sleep ) {
       paintSleep();
       sleep = true;
@@ -649,4 +658,3 @@ void loop() {
     }
   }
 }
-
