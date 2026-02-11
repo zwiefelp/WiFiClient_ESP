@@ -93,7 +93,7 @@ struct Member Screen[10][5];
 char scrname[10][20];
 int id = ESP.getChipId();
 
-unsigned int nScreens;
+unsigned int nScreens = 0;
 unsigned int confstage;
 
 void setup() {
@@ -283,7 +283,11 @@ void reconnect() {
         Serial.print("Publish Announcement: ");
         Serial.println(msg);
       #endif
+
       // ... and resubscribe
+      #ifdef DEBUG
+        Serial.println("Resubscribe...");
+      #endif
       client.subscribe("/openhab/configuration");
       client.subscribe("/openhab/configuration/#");
       client.subscribe("/openhab/out/Netatmo_Temp_Indoor/state");
@@ -299,9 +303,20 @@ void reconnect() {
       client.subscribe("/openhab/DayDate");
       client.subscribe("/openhab/Daytime");
 
-      #ifdef DEBUG
-        Serial.println("Resubscribe...");
-      #endif
+      if ( configured && nScreens > 0 ) {
+        for (int i=0; i <= nScreens; i++) {
+          for (int j=1; j <= 4; j++) {
+            if (strlen(Screen[i][j].statetopic) > 0) {
+              client.subscribe(Screen[i][j].statetopic);
+              #ifdef DEBUG
+                Serial.print("Subscribe: ");
+                Serial.println(Screen[i][j].statetopic);
+              #endif
+            }
+          }
+        }
+      }
+      
     } else {
       tft.print("failed, rc=");
       tft.print(client.state());
