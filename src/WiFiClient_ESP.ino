@@ -161,16 +161,18 @@ void setup() {
   // Port defaults to 8266
   // ArduinoOTA.setPort(8266);
 
-  // Hostname defaults to esp8266-[ChipID]
-  // ArduinoOTA.setHostname("myesp8266");
+  // Hostname (mDNS-Name = <Hostname>.local), sonst esp8266-[ChipID]
+  #ifdef SECRET_OTA_HOSTNAME
+    ArduinoOTA.setHostname(SECRET_OTA_HOSTNAME);
+  #endif
 
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
+  // OTA-Passwort - dringend empfohlen, sonst kann jeder im WLAN flashen
+  #ifdef SECRET_OTA_PASSWORD
+    ArduinoOTA.setPassword(SECRET_OTA_PASSWORD);
+  #else
+    #warning "Kein SECRET_OTA_PASSWORD gesetzt - OTA laeuft ohne Authentifizierung!"
+  #endif
 
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-  
   ArduinoOTA.onStart([]() {
     String type;
     if (ArduinoOTA.getCommand() == U_FLASH) {
