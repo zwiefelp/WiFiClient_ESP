@@ -4,3 +4,7 @@
 .gcc-flags.json
 .pio
 
+# Zugangsdaten - nicht versionieren (Vorlage: src/secrets.h.example)
+src/secrets.h
+*.kate-swp
+

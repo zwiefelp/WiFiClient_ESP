@@ -9,10 +9,11 @@
 #include <Adafruit_ILI9341esp.h>
 #include <PubSubClient.h>
 #include <netatmo_icons.h>
+#include "secrets.h"
 
-const char* ssid     = "OpenHAB";
-const char* password = "$OpenHAB123";
-const char* mqtt_server = "192.168.1.1";
+const char* ssid     = SECRET_WIFI_SSID;
+const char* password = SECRET_WIFI_PASSWORD;
+const char* mqtt_server = SECRET_MQTT_SERVER;
 
 #define TFT_DC 2
 #define TFT_CS -1
@@ -224,7 +225,7 @@ void setup() {
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  char spayload[length]; 
+  char spayload[length + 1];
   memcpy(spayload, payload, length);
   spayload[length] = '\0';
   char topicfilter[50] = "";
