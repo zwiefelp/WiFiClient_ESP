@@ -1,4 +1,5 @@
 #include <ESP8266WiFi.h>
+#include <ArduinoOTA.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_I2CDevice.h>
@@ -11,6 +12,7 @@
 
 const char* ssid     = "OpenHAB";
 const char* password = "$OpenHAB123";
+const char* mqtt_server = "192.168.1.1";
 
 #define TFT_DC 2
 #define TFT_CS -1
@@ -31,9 +33,9 @@ const char* password = "$OpenHAB123";
 
 #ifdef HC595
 #define DS 15
-#define SHCP 4
-#define STCP 5
-#define BTNRD 16
+#define SRCLK 4
+#define RCLK 5
+#define SENSE 16
 #endif
 
 #ifndef HC595
@@ -54,8 +56,6 @@ bool bd[11] = {false,false,false,false,false,false,false,false,false,false,false
 #endif
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
-
-const char* mqtt_server = "192.168.1.1";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
@@ -122,9 +122,9 @@ void setup() {
 
   #ifdef HC595
   pinMode(DS, OUTPUT);
-  pinMode(SHCP, OUTPUT);
-  pinMode(STCP, OUTPUT);
-  pinMode(BTNRD, INPUT_PULLDOWN_16);
+  pinMode(SRCLK, OUTPUT);
+  pinMode(RCLK, OUTPUT);
+  pinMode(SENSE, INPUT_PULLDOWN_16);
   
   #endif
 
@@ -156,7 +156,58 @@ void setup() {
       #endif
     tft.print(".");
   }
-   #ifdef DEBUG
+
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+  // ArduinoOTA.setHostname("myesp8266");
+
+  // No authentication by default
+  // ArduinoOTA.setPassword("admin");
+
+  // Password can be set with it's md5 value as well
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+  
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else {  // U_FS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Serial.println("Start updating " + type);
+  });
+  
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End Failed");
+    }
+  });
+  
+  ArduinoOTA.begin();
+  
+  #ifdef DEBUG
     Serial.println("");
     Serial.println("WiFi connected");  
     Serial.print("IP address: ");
@@ -342,7 +393,7 @@ void btnLoop() {
   // Scan all the IO-Pins on the 74HC595
   for(scan = 0; scan <= 15; scan++) {
     
-    digitalWrite(SHCP, LOW);
+    digitalWrite(SRCLK, LOW);
     
     //Serial.print("Button set ");
     //Serial.print(i);
@@ -351,20 +402,20 @@ void btnLoop() {
     if (scan == 0) {
       digitalWrite(DS, HIGH);
     } else {
-      digitalWrite(DS,LOW);
+      digitalWrite(DS, LOW);
     }
     delay(loopd);
 
     //Serial.println("Latch SRCLK");
-    digitalWrite(SHCP,HIGH);
+    digitalWrite(SRCLK, HIGH);
     delay(loopd);
-    digitalWrite(SHCP, LOW);
+    digitalWrite(SRCLK, LOW);
     delay(loopd);
 
     //Serial.println("Latch RCLK");
-    digitalWrite(STCP,HIGH);
+    digitalWrite(RCLK, HIGH);
     delay(loopd);
-    digitalWrite(STCP,LOW);
+    digitalWrite(RCLK, LOW);
     delay(loopd);
 
     // Get button nr connected to the scanned IO-Pin
@@ -373,7 +424,7 @@ void btnLoop() {
     if (bnum > 0) { // Only check btndwn if a button is connected to the IO-Pin
 
       // Check Button pressed and debounce
-      if (digitalRead(BTNRD) == HIGH && bd[bnum] == false) {
+      if (digitalRead(SENSE) == HIGH && bd[bnum] == false) {
         Serial.print("Button pressed: ");
         Serial.print(bnum);
         Serial.println();
@@ -381,7 +432,7 @@ void btnLoop() {
         bd[bnum] = true;
       }
 
-      if (digitalRead(BTNRD) == LOW && bd[bnum] == true ) {
+      if (digitalRead(SENSE) == LOW && bd[bnum] == true ) {
         bd[bnum] = false;
       }
     }
@@ -843,6 +894,8 @@ void paintSleep() {
 }
 
 void loop() {
+  ArduinoOTA.handle();
+
   smillis = millis();
   if (!client.connected()) {
     reconnect();
