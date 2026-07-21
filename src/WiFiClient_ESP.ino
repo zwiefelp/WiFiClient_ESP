@@ -9,6 +9,7 @@
 #include <Adafruit_ILI9341esp.h>
 #include <PubSubClient.h>
 #include <netatmo_icons.h>
+#include <math.h>
 #include "secrets.h"
 
 const char* ssid     = SECRET_WIFI_SSID;
@@ -18,10 +19,37 @@ const char* mqtt_server = SECRET_MQTT_SERVER;
 #define TFT_DC 2
 #define TFT_CS -1
 #define sleepmillis 10000
+#define WIFI_TIMEOUT_MS 20000   // WLAN-Verbindung: Timeout, dann Neustart
 #define HC595 
 #define DEBUG
 // TFT Rotation: 0=Pinheader on bottom, 2=Pinheader on top
-#define TFTROT 2 
+#define TFTROT 2
+
+// ---- Farbpalette (RGB565) fuer das Card-Design in paintScreen() ----
+// Kraeftige, gesaettigte Farben - das Panel hat starken Blaustich/Gamma,
+// Pastelltoene wirken darauf ausgewaschen. Karten neutralgrau statt Navy.
+#define COL_BG       ILI9341_BLACK
+#define COL_CARD     0x0841   // neutrales, fast schwarzes Grau
+#define COL_CARD_HI  0x4208   // Icon-Kachel (mittleres Grau)
+#define COL_STROKE   0x52AA   // Kartenrand (deutlich sichtbar)
+#define COL_TEXT     ILI9341_WHITE
+#define COL_MUTED    0xC618   // Untertitel/gedaempft (helles Grau)
+#define COL_ACCENT   0x07FF   // Cyan (voll gesaettigt)
+#define COL_ON       0x07E0   // Gruen  (Ein/An/Start)
+#define COL_OFF      0xF800   // Rot    (Aus/Stop)
+#define COL_NEUTRAL  0xC618   // Hellgrau (neutrale Aktionen, z.B. Rollo Auf/Ab)
+#define COL_TRACK    0x2945   // Grau   (inaktive Flaeche)
+#define COL_AMBER    0xFD20   // Orange  (Sensor CO2)
+#define COL_VIOLET   0xF81F   // Magenta (Sensor Laerm)
+
+// ---- Kartenmasse + Button-Raster ----
+// 5 Baender a 64px ueber die volle Hoehe: Band 0 = Navigation (oberstes
+// Taster-Paar), Band 1-4 = Member 1-4. So liegen die Karten auf Hoehe der
+// zugehoerigen physischen Taster.
+#define CARD_X    8
+#define CARD_W    224
+#define CARD_H    56
+#define BAND_H    64
 
 #ifndef HC595
 #define button1 15
@@ -97,6 +125,120 @@ int id = ESP.getChipId();
 unsigned int nScreens = 0;
 unsigned int confstage;
 
+// ============================================================
+//  Gemeinsame Zeichen-Helfer (Boot-/Sleep-Screen)
+// ============================================================
+
+// Kreisbogen (Grad; 0=rechts, im Uhrzeigersinn da y nach unten; -90=oben).
+void drawArc(int cx, int cy, int r, int a0, int a1, int thickness, uint16_t color) {
+  for (int a = a0; a <= a1; a++) {
+    float rad = a * 0.0174533f;
+    float c = cosf(rad), s = sinf(rad);
+    for (int t = 0; t < thickness; t++) {
+      tft.drawPixel(cx + (int)((r + t) * c), cy + (int)((r + t) * s), color);
+    }
+  }
+}
+
+// WiFi-Symbol: drei nach oben offene Boegen ueber einem Punkt.
+void drawWifiIcon(int cx, int cy, int size, uint16_t color) {
+  drawArc(cx, cy, (int)(size * 0.30f), 210, 330, 3, color);
+  drawArc(cx, cy, (int)(size * 0.58f), 210, 330, 3, color);
+  drawArc(cx, cy, (int)(size * 0.86f), 210, 330, 3, color);
+  tft.fillCircle(cx, cy, 3, color);
+}
+
+// Ring-Gauge: voller Track + Wertbogen ab 12 Uhr im Uhrzeigersinn.
+void drawRing(int cx, int cy, int r, float frac, uint16_t color) {
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  drawArc(cx, cy, r, 0, 359, 3, COL_TRACK);
+  if (frac > 0) drawArc(cx, cy, r, -90, -90 + (int)(360 * frac), 3, color);
+}
+
+// Statuszeile des Splash-Screens (Band bei y~190) neu setzen.
+void drawSplashMsg(const char* msg, uint16_t col) {
+  int16_t x1, y1;
+  uint16_t tw, th;
+  tft.fillRect(0, 186, 240, 22, COL_BG);
+  tft.setFont(&FreeSans9pt7b);
+  tft.setTextColor(col);
+  tft.getTextBounds(msg, 0, 0, &x1, &y1, &tw, &th);
+  tft.setCursor((240 - tw) / 2 - x1, 202);
+  tft.print(msg);
+}
+
+// Fortschrittsbalken (0..100).
+void drawProgress(int pct) {
+  const int bx = 40, bw = 160, by = 228, bh = 8;
+  tft.fillRoundRect(bx, by, bw, bh, 4, COL_TRACK);
+  if (pct > 0) tft.fillRoundRect(bx, by, bw * pct / 100, bh, 4, COL_ACCENT);
+}
+
+// Kompletter Splash-Screen: WiFi-Icon im Glow-Kreis, Titel, Status, Balken.
+void drawSplash(const char* title, const char* msg, uint16_t msgCol) {
+  int16_t x1, y1;
+  uint16_t tw, th;
+  tft.setRotation(TFTROT);
+  tft.fillScreen(COL_BG);
+  tft.fillCircle(120, 92, 46, COL_CARD);
+  tft.fillCircle(120, 92, 34, COL_CARD_HI);
+  drawWifiIcon(120, 104, 30, COL_ACCENT);
+  tft.setFont(&FreeSans18pt7b);
+  tft.setTextColor(COL_TEXT);
+  tft.getTextBounds(title, 0, 0, &x1, &y1, &tw, &th);
+  tft.setCursor((240 - tw) / 2 - x1, 168);
+  tft.print(title);
+  drawSplashMsg(msg, msgCol);
+  drawProgress(0);
+}
+
+// Temperatur-Karte fuer den Dashboard/Sleep-Screen.
+void drawTempCard(int x, int y, int w, int h, const char* label,
+                  const char* temp, const char* hum, uint16_t col) {
+  char buf[16];
+  tft.fillRoundRect(x, y, w, h, 10, COL_CARD);
+  tft.drawRoundRect(x, y, w, h, 10, COL_STROKE);
+
+  tft.setFont();
+  tft.setTextColor(COL_MUTED);
+  tft.setCursor(x + 12, y + 12);
+  tft.print(label);
+
+  tft.setFont(&FreeSans18pt7b);
+  tft.setTextColor(col);
+  tft.setCursor(x + 10, y + 50);
+  snprintf(buf, 16, "%.1f", atof(temp));   // auf 1 Nachkommastelle begrenzen
+  tft.print(buf);
+  tft.setFont(&FreeSans9pt7b);
+  tft.print(" C");
+
+  snprintf(buf, 16, "%d%%", atoi(hum));
+  tft.drawBitmap(x + 10, y + h - 22, humicon, 11, 16, COL_ACCENT);
+  tft.setFont(&FreeSans9pt7b);
+  tft.setTextColor(COL_TEXT);
+  tft.setCursor(x + 26, y + h - 9);
+  tft.print(buf);
+}
+
+// Sensor-Kachel mit Ring-Gauge, Icon, Wert und Einheit.
+void drawSensorTile(int x, int y, int w, int h, const uint8_t* icon, int iw,
+                    uint16_t col, const char* value, const char* unit, float frac) {
+  tft.fillRoundRect(x, y, w, h, 10, COL_CARD);
+  tft.drawRoundRect(x, y, w, h, 10, COL_STROKE);
+  int cx = x + 26, cy = y + h / 2;
+  drawRing(cx, cy, 15, frac, col);
+  tft.drawBitmap(cx - iw / 2, cy - 8, icon, iw, 16, col);
+  tft.setFont(&FreeSans9pt7b);
+  tft.setTextColor(COL_TEXT);
+  tft.setCursor(x + 48, cy - 1);
+  tft.print(value);
+  tft.setFont();
+  tft.setTextColor(COL_MUTED);
+  tft.setCursor(x + 48, cy + 5);
+  tft.print(unit);
+}
+
 void setup() {
   configured = false;
   confstage = 0;
@@ -131,12 +273,8 @@ void setup() {
 
   tft.begin();
   SPI.setFrequency(ESP_SPI_FREQ);
-  tft.fillScreen(ILI9341_BLACK);  
-  tft.setTextColor(ILI9341_WHITE);
-  //tft.setTextSize(1);
-  tft.setRotation(TFTROT); 
-  tft.setFont();
-  //tft.setFont(&FreeSans9pt7b);
+  tft.setRotation(TFTROT);
+  drawSplash("Verbinde", ssid, COL_MUTED);
 
   // We start by connecting to a WiFi network
    #ifdef DEBUG
@@ -145,17 +283,31 @@ void setup() {
     Serial.println(ssid);
   #endif
 
-  tft.print("Connecting to ");
-  tft.print(ssid);
-  
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  
+
+  unsigned long wifiStart = millis();
+  int pct = 0;
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(300);
       #ifdef DEBUG
         Serial.print(".");
       #endif
-    tft.print(".");
+    pct += 8;
+    if (pct > 100) pct = 8;
+    drawProgress(pct);
+
+    // Timeout: Hinweis anzeigen und Neustart (sauberer Stack, erneuter Versuch)
+    if (millis() - wifiStart > WIFI_TIMEOUT_MS) {
+      #ifdef DEBUG
+        Serial.println();
+        Serial.println("WiFi timeout - restarting");
+      #endif
+      drawSplash("Kein WLAN", ssid, COL_OFF);
+      drawSplashMsg("Neuversuch in 3s...", COL_MUTED);
+      delay(3000);
+      ESP.restart();
+    }
   }
 
   // Port defaults to 8266
@@ -217,11 +369,10 @@ void setup() {
     Serial.println(WiFi.localIP());
   #endif
 
-  //tft.println("");
-  tft.println("WiFi connected");  
-  tft.print("IP address: ");
-  tft.println(WiFi.localIP());
-  
+  drawSplash("Verbunden", WiFi.localIP().toString().c_str(), COL_ON);
+  drawProgress(100);
+  delay(800);
+
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
 }
@@ -236,7 +387,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     Serial.print("Message arrived [");
     Serial.print(topic);
     Serial.print("] ");
-    for (int i = 0; i < length; i++) {
+    for (unsigned int i = 0; i < length; i++) {
       Serial.print((char)payload[i]);
     }
     Serial.println();
@@ -286,7 +437,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (confstage == 4) {
-    for (int i=0; i <= nScreens; i++) {
+    for (int i=0; i <= (int)nScreens; i++) {
       for (int j=1; j <= 4; j++) {
         //Serial.println(Screen[i][j].statetopic);
         if (strcmp(topic, Screen[i][j].statetopic) == 0) {
@@ -297,7 +448,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
             strcpy(Screen[i][j].state, spayload);
             if ( i == num) {
               if (!sleep) {
-                paintScreen();
+                paintCard(j);   // nur die geaenderte Karte neu zeichnen
               } else {
                 delaym = 0;
               }
@@ -317,16 +468,15 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 void reconnect() {
   // Loop until we're reconnected
-  tft.fillScreen(ILI9341_BLACK);  
-  tft.setTextColor(ILI9341_WHITE);
+  drawSplash("MQTT", "verbinde...", COL_MUTED);
   while (!client.connected()) {
-    tft.print("Attempting MQTT connection...");
     #ifdef DEBUG
       Serial.print("Attempting MQTT connection...");
     #endif
     // Attempt to connect
     if (client.connect(espID)) {
-      tft.println("connected");
+      drawSplashMsg("verbunden", COL_ON);
+      drawProgress(100);
       #ifdef DEBUG
         Serial.println("connected");
       #endif
@@ -358,7 +508,7 @@ void reconnect() {
       client.subscribe("/openhab/Daytime");
 
       if ( configured && nScreens > 0 ) {
-        for (int i=0; i <= nScreens; i++) {
+        for (int i=0; i <= (int)nScreens; i++) {
           for (int j=1; j <= 4; j++) {
             if (strlen(Screen[i][j].statetopic) > 0) {
               client.subscribe(Screen[i][j].statetopic);
@@ -372,14 +522,13 @@ void reconnect() {
       }
       
     } else {
-      tft.print("failed, rc=");
-      tft.print(client.state());
+      char errbuf[40];
+      snprintf(errbuf, 40, "Fehler rc=%d, erneut...", client.state());
       #ifdef DEBUG
         Serial.print("failed, rc=");
         Serial.println(client.state());
       #endif
-
-      tft.println(" try again in 5 seconds");
+      drawSplashMsg(errbuf, COL_OFF);
       // Wait 5 seconds before retrying
       delay(5000);
     }
@@ -574,7 +723,7 @@ void btnDownCallback(unsigned int btn) {
         if (btn == 2) { num++; }
         if (btn == 1) { num--; }
         if (num < 0) { num = nScreens; }
-        if (num > nScreens) { num = 0; }
+        if (num > (int)nScreens) { num = 0; }
         paintScreen();
       }
     }
@@ -582,15 +731,12 @@ void btnDownCallback(unsigned int btn) {
     delay(200);
 }
 
-void getConfiguration(char* cmd) {
+void getConfiguration(const char* cmd) {
   char delimiter[] = ":";
   char *ptr;
-  char temp[100] = "";
 
-  tft.println(cmd);
-  
   if ( strcmp(cmd,"initialize") == 0 ) {
-    tft.println("Getting Configuration...");
+    drawSplash("Konfiguration", "wird geladen...", COL_MUTED);
     snprintf(msg,50,"getconfig:%i", id);
     client.publish("/openhab/configuration",msg, true);
     confstage = 1;
@@ -603,11 +749,8 @@ void getConfiguration(char* cmd) {
 
   if ( strcmp(cmd,"reconfigure") == 0 ) {
     configured = false;
-    confstage = 0;    
-    tft.fillScreen(ILI9341_BLACK);  
-    tft.setTextColor(ILI9341_WHITE);
-    tft.setFont();
-    tft.setCursor(0,0);
+    confstage = 0;
+    drawSplash("Konfiguration", "neu laden...", COL_MUTED);
     goto finish;
   }
 
@@ -683,217 +826,164 @@ void getConfiguration(char* cmd) {
   finish:;
 }
 
-void paintScreen() {
-  int xpos;
-  char* text;
-  int ypos;
-  int cw = 9;
-  char scr[20];
-  int16_t x1, y1; 
-  uint16_t w, h;
-
-  
-  tft.fillScreen(ILI9341_BLACK);  
-  tft.setTextColor(ILI9341_WHITE);
-  //tft.setTextSize(1);
-  tft.setRotation(TFTROT);
-  tft.setFont();
-  cw = 6;
-  uint16_t color;
-
-  tft.setTextColor(ILI9341_WHITE);
-  snprintf(scr,20,"%s (%u/%u)", scrname[num], num + 1, nScreens + 1);
-  xpos = ((240 - strlen(scr) * cw) / 2);
-  tft.setCursor(xpos, 6);
-  tft.print(scr);
-
-  tft.fillTriangle(231, 14, 231, 4, 238, 9, ILI9341_WHITE);
-  tft.fillTriangle(9, 14, 9, 4, 2, 9, ILI9341_WHITE);
-
-  tft.setFont(&FreeSans9pt7b);
-  cw = 9;
-  
-  for (unsigned int i = 1; i<=4; i++ ) {
-      
-    if ( strcmp(Screen[num][i].name1,"") != 0) {
-      ypos = (i-1) * 83 + 15 + 35;
-      text = Screen[num][i].txtl;
-      color = getColor(text);
-      tft.getTextBounds(text, 6, ypos, &x1, &y1, &w, &h);
-
-      if (strcmp(Screen[num][i].state,Screen[num][i].cmdl) == 0) {
-        tft.fillRoundRect(x1 - 4, y1 - 4 , w + 8, h + 8, 2, color);
-        tft.setTextColor(ILI9341_WHITE);
-      } else {
-        tft.drawRoundRect(x1 - 4, y1 - 4 , w + 8, h + 8, 2, color);
-        tft.setTextColor(color);
-      }
-
-      tft.setCursor(6, ypos);
-      tft.print(text);
-
-      tft.setTextColor(ILI9341_WHITE);
-      text = Screen[num][i].name1;
-      tft.getTextBounds(text, 10,10, &x1, &y1, &w, &h);
-      xpos = ((240 - w) / 2);
-      tft.setCursor(xpos, ypos - 9);
-      tft.print(text);
-   
-      text = Screen[num][i].name2;
-      tft.getTextBounds(text, 10,10, &x1, &y1, &w, &h);
-      xpos = ((240 - w) / 2);
-      tft.setCursor(xpos, ypos + 9);
-      tft.print(text);
-  
-      text = Screen[num][i].txtr;
-      color = getColor(text);
-      tft.getTextBounds(text, 10,10, &x1, &y1, &w, &h);
-      xpos = (240 - w - 6);
-
-      if (strcmp(Screen[num][i].state,Screen[num][i].cmdr) == 0) {
-        tft.fillRoundRect(xpos - 4, ypos - 16, w + 8, h + 8, 2, color);
-        tft.setTextColor(ILI9341_WHITE);
-      } else {
-        tft.drawRoundRect(xpos - 4, ypos - 16, w + 8, h + 8, 2, color);
-        tft.setTextColor(color);
-      }
-      
-      tft.setCursor(xpos, ypos);
-      tft.print(text);
-    }
-  }
+// Semantische Farbe fuer ein Tasten-Label.
+uint16_t keyColor(const char* t) {
+  if (strcmp(t, "Ein") == 0 || strcmp(t, "An") == 0 ||
+      strcmp(t, "Start") == 0) return COL_ON;
+  if (strcmp(t, "Aus") == 0 || strcmp(t, "Stop") == 0) return COL_OFF;
+  return COL_NEUTRAL;   // neutral, z.B. Rollo Auf/Ab/Zu
 }
 
-uint16_t getColor(char* text) {
-  uint16_t color;
-  color = ILI9341_YELLOW;
-  
-  if ( strcmp(text,"Ein") == 0 ) {
-    color = ILI9341_GREEN;
+// Breite einer Taste inkl. Innenabstand.
+int keyWidth(const char* label) {
+  int16_t x1, y1;
+  uint16_t tw, th;
+  tft.setFont(&FreeSans9pt7b);
+  tft.getTextBounds(label, 0, 0, &x1, &y1, &tw, &th);
+  return tw + 16;
+}
+
+// Zeichnet eine Taste am Kartenrand (mappt auf den physischen Taster daneben).
+// active -> gefuellt mit Farbe + schwarzer Text (hoher Kontrast)
+// inaktiv -> nur farbiger Rahmen + farbiger Text
+void drawKey(int x, int y, const char* label, uint16_t color, bool active) {
+  int16_t x1, y1;
+  uint16_t tw, th;
+  const int h = 26;
+  tft.setFont(&FreeSans9pt7b);
+  tft.getTextBounds(label, 0, 0, &x1, &y1, &tw, &th);
+  int w = tw + 16;
+
+  if (active) {
+    tft.fillRoundRect(x, y, w, h, 5, color);
+    tft.setTextColor(COL_BG);
+  } else {
+    tft.drawRoundRect(x, y, w, h, 5, color);
+    tft.setTextColor(color);
+  }
+  tft.setCursor(x + 8 - x1, y + h / 2 - y1 - th / 2);
+  tft.print(label);
+}
+
+// Zeichnet genau eine Geraetekarte (i = 1..4) des aktuellen Screens neu.
+// Links/rechts je eine Taste (passend zu den Tastern neben dem Display),
+// Name mittig. Wird beim Vollaufbau und bei Status-Updates genutzt.
+void paintCard(unsigned int i) {
+  int16_t x1, y1;
+  uint16_t tw, th;
+
+  if (strcmp(Screen[num][i].name1, "") == 0) return;
+
+  // Member i in Band i (Band 0 = Navigation) -> Ausrichtung an den Tastern
+  int cy = i * BAND_H + (BAND_H - CARD_H) / 2;
+
+  // Karte
+  tft.fillRoundRect(CARD_X, cy, CARD_W, CARD_H, 8, COL_CARD);
+  tft.drawRoundRect(CARD_X, cy, CARD_W, CARD_H, 8, COL_STROKE);
+
+  bool leftOn  = (strcmp(Screen[num][i].state, Screen[num][i].cmdl) == 0);
+  bool rightOn = (strcmp(Screen[num][i].state, Screen[num][i].cmdr) == 0);
+  int ky = cy + (CARD_H - 26) / 2;
+
+  // Linke Taste (linker Taster -> cmdl) und rechte Taste (rechter Taster -> cmdr)
+  int lw = keyWidth(Screen[num][i].txtl);
+  int rw = keyWidth(Screen[num][i].txtr);
+  drawKey(CARD_X + 6, ky, Screen[num][i].txtl, keyColor(Screen[num][i].txtl), leftOn);
+  drawKey(CARD_X + CARD_W - 6 - rw, ky, Screen[num][i].txtr, keyColor(Screen[num][i].txtr), rightOn);
+
+  // Name mittig zwischen den beiden Tasten
+  int cx = ((CARD_X + 6 + lw) + (CARD_X + CARD_W - 6 - rw)) / 2;
+
+  // name1 (Typ) dezent oben, name2 (Name) betont darunter
+  tft.setFont();  // GLCD klein/duenn fuer den Typ
+  tft.setTextColor(COL_MUTED);
+  tft.setCursor(cx - (int)strlen(Screen[num][i].name1) * 3, cy + 18);
+  tft.print(Screen[num][i].name1);
+
+  tft.setFont(&FreeSans9pt7b);  // fett/hell fuer den Namen
+  tft.setTextColor(COL_TEXT);
+  tft.getTextBounds(Screen[num][i].name2, 0, 0, &x1, &y1, &tw, &th);
+  tft.setCursor(cx - tw / 2 - x1, cy + 42);
+  tft.print(Screen[num][i].name2);
+}
+
+void paintScreen() {
+  int16_t x1, y1;
+  uint16_t tw, th;
+
+  tft.setRotation(TFTROT);
+  tft.fillScreen(COL_BG);
+
+  // ---- Titelzeile ----
+  tft.setFont(&FreeSans12pt7b);
+  tft.setTextColor(COL_TEXT);
+  tft.getTextBounds(scrname[num], 0, 0, &x1, &y1, &tw, &th);
+  tft.setCursor((240 - tw) / 2, 30);
+  tft.print(scrname[num]);
+
+  // Navigations-Chevrons: Button 1 = zurueck (links), Button 2 = weiter (rechts)
+  tft.fillTriangle(10, 18, 10, 30, 4, 24, COL_MUTED);
+  tft.fillTriangle(230, 18, 230, 30, 236, 24, COL_MUTED);
+
+  // Seiten-Punkte (aktuelle Screen-Position)
+  int dots = nScreens + 1;
+  int dx = (240 - dots * 10) / 2;
+  for (int k = 0; k < dots; k++) {
+    tft.fillCircle(dx + k * 10 + 3, 46, 2, (k == (int)num) ? COL_ACCENT : COL_STROKE);
   }
 
-  if ( strcmp(text,"Aus") == 0 ) {
-    color = ILI9341_RED;
+  // ---- Geraetekarten ----
+  for (unsigned int i = 1; i <= 4; i++) {
+    paintCard(i);
   }
-  return color;
 }
 
 void paintSleep() {
-  int xpos;
-  int cw = 18;
-  char scr[20] ="00:00";
-  char* buf;
+  int16_t x1, y1;
+  uint16_t tw, th;
+  char buf[16];
   int tmp;
-  
-  tft.fillScreen(ILI9341_BLACK);  
-  tft.setTextColor(ILI9341_WHITE);
-  //tft.setTextSize(1);
-  tft.setRotation(TFTROT);
-  tft.setFont(&FreeSans18pt7b);
 
-  tft.setTextColor(ILI9341_WHITE);
-  strcpy(scr, daytime);
-  xpos = ((240 - strlen(daytime) * cw) / 2);
-  tft.setCursor(xpos, 40);
+  tft.setRotation(TFTROT);
+  tft.fillScreen(COL_BG);
+
+  // ---- Uhr + Datum ----
+  tft.setFont(&FreeSans18pt7b);
+  tft.setTextColor(COL_TEXT);
+  tft.getTextBounds(daytime, 0, 0, &x1, &y1, &tw, &th);
+  tft.setCursor((240 - tw) / 2 - x1, 46);
   tft.print(daytime);
 
   tft.setFont(&FreeSans9pt7b);
-  cw = 9;
-  tft.setTextColor(ILI9341_WHITE);
-  strcpy(scr, daydate);
-  xpos = ((240 - strlen(scr) * cw) / 2);
-  tft.setCursor(xpos, 62);
-  tft.print(scr);
+  tft.setTextColor(COL_MUTED);
+  tft.getTextBounds(daydate, 0, 0, &x1, &y1, &tw, &th);
+  tft.setCursor((240 - tw) / 2 - x1, 74);
+  tft.print(daydate);
 
-  tft.setFont();
-  cw = 6;
-  tft.setCursor(10, 110);
-  tft.print("Netatmo Innen");
-  //tft.drawRoundRect(2, 105, 236, 100, 2, ILI9341_WHITE);
+  // ---- Temperatur-Karten (Innen/Aussen) ----
+  drawTempCard(8, 88, 110, 86, "INNEN", tempin, humin, COL_ON);
+  drawTempCard(122, 88, 110, 86, "AUSSEN", tempout, humout, COL_OFF);
 
-  tft.setCursor(10, 200);
-  tft.print("Avocado WZ");
-  //tft.drawRoundRect(2, 230, 236, 80, 2, ILI9341_WHITE);
-
-  tft.setCursor(10, 235);
-  tft.print("Netatmo Aussen");
- 
-  tft.setFont(&FreeSans18pt7b);
-  cw = 18;
-  tft.setTextColor(ILI9341_GREEN);
-  snprintf(scr,20,"%s C", tempin);
-  xpos = (230 - strlen(scr) * cw);
-  tft.setCursor(xpos, 140);
-  tft.print(scr);
-
-  tft.setFont(&FreeSans9pt7b);
-  cw = 9;
-  
-  tmp = atoi(humin);
-  //snprintf(scr,20,"%s %%", humin);
-  snprintf(scr,20,"%d %%", tmp);
-  xpos = (100 - strlen(scr) * cw);
-  tft.setCursor(xpos, 170);
-  tft.print(scr);
-  tft.drawBitmap(10, 156, humicon, 11, 16, ILI9341_WHITE);
-
-  tmp = atoi(pressin);
-  //snprintf(scr,20,"%s mb", pressin);
-  snprintf(scr,20,"%d mb", tmp);
-  xpos = (230 - strlen(scr) * cw);
-  tft.setCursor(xpos, 170);
-  tft.print(scr);
-  tft.drawBitmap(130, 156, pressicon, 14, 16, ILI9341_WHITE);
-  
+  // ---- Sensor-Kacheln mit Ring-Gauges (fuellen bis zum unteren Rand) ----
   tmp = atoi(coin);
-  //snprintf(scr,20,"%s ppm", coin);
-  snprintf(scr,20,"%d ppm", tmp);
-  xpos = (100 - strlen(scr) * cw);
-  tft.setCursor(xpos, 190);
-  tft.print(scr);
-  tft.drawBitmap(8, 176, co2icon, 16, 16, ILI9341_WHITE);
+  snprintf(buf, 16, "%d", tmp);
+  drawSensorTile(8, 180, 110, 66, co2icon, 16, COL_AMBER, buf, "ppm CO2",
+                 (tmp - 400) / 1600.0f);
 
   tmp = atoi(noisein);
-  //snprintf(scr,20,"%s db", noisein);
-  snprintf(scr,20,"%d db", tmp);
-  xpos = (230 - strlen(scr) * cw);
-  tft.setCursor(xpos, 190);
-  tft.print(scr);
-  tft.drawBitmap(130, 176, noiseicon, 15, 16, ILI9341_WHITE);
-
-  tmp = atoi(humavo);
-  snprintf(scr,20,"%d %%", tmp);
-  xpos = (230 - strlen(scr) * cw);
-  tft.setCursor(xpos, 210);
-  tft.print(scr);
-  tft.drawBitmap(130, 196, humicon, 11, 16, ILI9341_WHITE);
-
-  tft.setTextColor(ILI9341_RED);
-  tft.setFont(&FreeSans18pt7b);
-  cw = 18;
-  snprintf(scr,20,"%s C", tempout);
-  xpos = (230 - strlen(scr) * cw);
-  tft.setCursor(xpos, 265);
-  tft.print(scr);
-
-  tft.setFont(&FreeSans9pt7b);
-  cw = 9;
-  
-  tmp = atoi(humout);
-  //snprintf(scr,20,"%s %%", humout);
-  snprintf(scr,20,"%d %%", tmp);
-  xpos = (100 - strlen(scr) * cw);
-  tft.setCursor(xpos, 295);
-  tft.print(scr);
-  tft.drawBitmap(10, 281, humicon, 11, 16, ILI9341_WHITE);
+  snprintf(buf, 16, "%d", tmp);
+  drawSensorTile(122, 180, 110, 66, noiseicon, 15, COL_VIOLET, buf, "dB Laerm",
+                 (tmp - 30) / 60.0f);
 
   tmp = atoi(pressin);
-  //snprintf(scr,20,"%s mb", pressin);
-  snprintf(scr,20,"%d mb", tmp);
-  xpos = (230 - strlen(scr) * cw);
-  tft.setCursor(xpos, 295);
-  tft.print(scr);
-  tft.drawBitmap(130, 281, pressicon, 14, 16, ILI9341_WHITE);
+  snprintf(buf, 16, "%d", tmp);
+  drawSensorTile(8, 250, 110, 66, pressicon, 14, COL_ACCENT, buf, "mbar",
+                 (tmp - 960) / 80.0f);
+
+  tmp = atoi(humavo);
+  snprintf(buf, 16, "%d", tmp);
+  drawSensorTile(122, 250, 110, 66, humicon, 11, COL_ON, buf, "% Avocado",
+                 tmp / 100.0f);
 }
 
 void loop() {

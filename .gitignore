@@ -8,3 +8,7 @@
 src/secrets.h
 *.kate-swp
 
+# Arbeitsmaterial: persoenliche Fotos + echte Home-Config -> nicht ins
+# oeffentliche Repo (Raumnamen/Topics/Screens). Bleibt lokal.
+docs/
+
