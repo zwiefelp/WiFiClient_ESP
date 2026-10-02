@@ -86,7 +86,19 @@ Das Gerät bezieht seine Oberflächen-Konfiguration zur Laufzeit. Ablauf:
      `Member:<idx>:<name1>:<name2>:<type>:<topic>:<txtl>:<txtr>:<cmdl>:<cmdr>:<statetopic>`,
      abgeschlossen mit `EndScreen`
    - `EndConfig` schließt die Konfiguration ab.
-3. Steuerkommandos auf `/openhab/configuration/<ChipId>`: `initialize`, `reconfigure`, `restart`.
+3. Steuerkommandos auf `/openhab/configuration/<ChipId>`: `initialize`, `reconfigure`, `restart`,
+   ab 1.0 Panel außerdem `getVersion` (Antwort `Version 1.0 Panel: RSSI=-71`) und `getIP`
+   (Antwort `IP: 192.168.1.108 RSSI=-71`), beide auf demselben Topic, nicht retained.
+
+**Diagnose** (ab 1.0 Panel, gleiches Format wie die Sonoff-Firmware, ausgewertet vom Debug-Tab
+von HomeControl):
+
+| Topic | Inhalt |
+|---|---|
+| `/openhab/debug/<ChipId>` | bei jeder MQTT-Verbindung: `Startup <ChipId> - Version 1.0 Panel: RSSI=-85 MQTTrc=-3 WiFiReason=4 LoopMax=140` (MQTTrc/WiFiReason/LoopMax nur nach einem Abbruch) |
+| `/openhab/debug/<ChipId>/status` | jede Minute: `Uptime=600s Heap=34664 MinHeap=31624 RSSI=-88 Reset=Power_On` |
+
+MQTT-Keepalive 60 s (der Broker trennt erst nach 90 s ohne Paket).
 
 Statusaktualisierungen kommen über die `statetopic`-Pfade der Elemente; feste Sensor-Topics
 (`/openhab/out/Netatmo_*`, `/openhab/DayDate`, `/openhab/Daytime`) speisen die Ruheanzeige.

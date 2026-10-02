@@ -20,6 +20,10 @@ const char* mqtt_server = SECRET_MQTT_SERVER;
 #define TFT_CS -1
 #define sleepmillis 10000
 #define WIFI_TIMEOUT_MS 20000   // WLAN-Verbindung: Timeout, dann Neustart
+#define FW_VERSION "1.0 Panel"  // erscheint in Startmeldung und getVersion
+#define MQTT_KEEPALIVE_S 60     // Broker trennt erst nach 1,5 x Keepalive ohne Paket
+#define STATUS_MS 60000         // Statuszeile auf /openhab/debug/<id>/status
+#define MQTT_STATE_NONE 99      // noch kein MQTT-Abbruch seit dem Start
 #define HC595 
 #define DEBUG
 // TFT Rotation: 0=Pinheader on bottom, 2=Pinheader on top
@@ -124,6 +128,19 @@ int id = ESP.getChipId();
 
 unsigned int nScreens = 0;
 unsigned int confstage;
+
+// ---- Diagnose fuer den Debug-Tab von HomeControl (gleiches Format wie die Sonoff-Firmware) ----
+//   /openhab/debug/<id>         "Startup <id> - Version 1.0 Panel: RSSI=-71 MQTTrc=-3 WiFiReason=1 LoopMax=140"
+//   /openhab/debug/<id>/status  "Uptime=600s Heap=21000 MinHeap=19000 RSSI=-71 Reset=Power_On"
+char debugTopic[50];
+char confTopic[50];
+int lastWifiReason = 0;                  // Grund der letzten WLAN-Trennung (SDK-Code), 0 = keine
+int lastMqttState = MQTT_STATE_NONE;     // client.state() beim letzten MQTT-Abbruch
+unsigned long loopMaxMs = 0;             // laengster loop()-Abstand seit der letzten Verbindung
+unsigned long lastLoopTs = 0;
+unsigned long lastStatusTs = 0;
+uint32_t minHeap = 0xFFFFFFFF;           // kleinster gemessener freier Heap seit dem Start
+WiFiEventHandler wifiDisconnectHandler;
 
 // ============================================================
 //  Gemeinsame Zeichen-Helfer (Boot-/Sleep-Screen)
@@ -243,6 +260,8 @@ void setup() {
   configured = false;
   confstage = 0;
   snprintf(espID,20,"esp%i", id);
+  snprintf(debugTopic, sizeof(debugTopic), "/openhab/debug/%i", id);
+  snprintf(confTopic, sizeof(confTopic), "/openhab/configuration/%i", id);
 
   #ifdef DEBUG
     Serial.begin(115200);
@@ -284,6 +303,9 @@ void setup() {
   #endif
 
   WiFi.mode(WIFI_STA);
+  wifiDisconnectHandler = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& e) {
+    lastWifiReason = e.reason;
+  });
   WiFi.begin(ssid, password);
 
   unsigned long wifiStart = millis();
@@ -374,6 +396,7 @@ void setup() {
   delay(800);
 
   client.setServer(mqtt_server, 1883);
+  client.setKeepAlive(MQTT_KEEPALIVE_S);
   client.setCallback(callback);
 }
 
@@ -466,6 +489,34 @@ void callback(char* topic, byte* payload, unsigned int length) {
   
 }
 
+void publishStartup() {
+  int n = snprintf(msg, sizeof(msg), "Startup %i - Version %s: RSSI=%d", id, FW_VERSION, WiFi.RSSI());
+  if (lastMqttState != MQTT_STATE_NONE && n < (int)sizeof(msg)) {
+    n += snprintf(msg + n, sizeof(msg) - n, " MQTTrc=%d", lastMqttState);
+  }
+  if (lastWifiReason != 0 && n < (int)sizeof(msg)) {
+    n += snprintf(msg + n, sizeof(msg) - n, " WiFiReason=%d", lastWifiReason);
+  }
+  if (lastMqttState != MQTT_STATE_NONE && n < (int)sizeof(msg)) {
+    snprintf(msg + n, sizeof(msg) - n, " LoopMax=%lu", loopMaxMs);
+  }
+  client.publish(debugTopic, msg);
+  loopMaxMs = 0;
+  lastLoopTs = millis();   // Dauer dieses Verbindungsaufbaus nicht mitzaehlen
+}
+
+/** Laufende Statuszeile – im Debug-Tab Online-Status, Heap-Chart und Leak-Trend. */
+void publishStatus() {
+  char status[120];
+  String reset = ESP.getResetReason();
+  reset.replace(' ', '_');
+  snprintf(status, sizeof(status), "Uptime=%lus Heap=%u MinHeap=%u RSSI=%d Reset=%s",
+           millis() / 1000, ESP.getFreeHeap(), minHeap, WiFi.RSSI(), reset.c_str());
+  char topic[60];
+  snprintf(topic, sizeof(topic), "%s/status", debugTopic);
+  client.publish(topic, status);
+}
+
 void reconnect() {
   // Loop until we're reconnected
   drawSplash("MQTT", "verbinde...", COL_MUTED);
@@ -480,9 +531,8 @@ void reconnect() {
       #ifdef DEBUG
         Serial.println("connected");
       #endif
-      // Once connected, publish an announcement...
-      snprintf(msg,50,"Startup %i", id);
-      client.publish("/openhab/esp8266", msg);
+      // Startmeldung mit Empfang und Grund des letzten Abbruchs (Format wie Sonoff-Firmware)
+      publishStartup();
       #ifdef DEBUG
         Serial.print("Publish Announcement: ");
         Serial.println(msg);
@@ -747,6 +797,19 @@ void getConfiguration(const char* cmd) {
     ESP.restart();
   }
 
+  // Abfragen von HomeControl (Online-Pruefung); Antwort auf demselben Topic, nicht retained
+  if ( strcmp(cmd,"getVersion") == 0 ) {
+    snprintf(msg, sizeof(msg), "Version %s: RSSI=%d", FW_VERSION, WiFi.RSSI());
+    client.publish(confTopic, msg);
+    goto finish;
+  }
+  if ( strcmp(cmd,"getIP") == 0 ) {
+    IPAddress ip = WiFi.localIP();
+    snprintf(msg, sizeof(msg), "IP: %d.%d.%d.%d RSSI=%d", ip[0], ip[1], ip[2], ip[3], WiFi.RSSI());
+    client.publish(confTopic, msg);
+    goto finish;
+  }
+
   if ( strcmp(cmd,"reconfigure") == 0 ) {
     configured = false;
     confstage = 0;
@@ -987,11 +1050,29 @@ void paintSleep() {
 }
 
 void loop() {
+  // laengster Abstand zweier Durchlaeufe (Diagnose, geht mit der naechsten Startmeldung raus)
+  unsigned long loopNow = millis();
+  if (lastLoopTs != 0 && loopNow - lastLoopTs > loopMaxMs) {
+    loopMaxMs = loopNow - lastLoopTs;
+  }
+  lastLoopTs = loopNow;
+  uint32_t heap = ESP.getFreeHeap();
+  if (heap < minHeap) minHeap = heap;
+
   ArduinoOTA.handle();
 
   smillis = millis();
+  static bool mqttWasConnected = false;
+  if (mqttWasConnected && !client.connected()) {
+    lastMqttState = client.state();
+  }
   if (!client.connected()) {
     reconnect();
+  }
+  mqttWasConnected = client.connected();
+  if (client.connected() && millis() - lastStatusTs >= STATUS_MS) {
+    lastStatusTs = millis();
+    publishStatus();
   }
   if (!configured) {
     if ( confstage == 0 ) {
